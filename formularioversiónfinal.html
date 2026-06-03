@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Solicitar mudanza · Panel de Cotización</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Serif+Display&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet-geosearch@3.11.0/dist/geosearch.css" />
 <style>
   /* ── Reset & base ─────────────────────────────────────────── */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -149,7 +150,7 @@
   }
 
   /* ── Form elements ────────────────────────────────────────── */
-  .field { margin-bottom: 18px; }
+  .field { margin-bottom: 18px; position: relative; }
   .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   @media (max-width: 480px) { .field-row { grid-template-columns: 1fr; } }
 
@@ -197,6 +198,33 @@
   }
   .check-group:hover { border-color: var(--accent); background: var(--accent-bg); }
   .check-group input { width: 16px; height: 16px; accent-color: var(--accent); flex-shrink: 0; }
+
+  /* Contenedor personalizado para sugerencias de autocompletado */
+  .sugerencias-lista {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--r-sm) var(--r-sm);
+    box-shadow: var(--shadow-md);
+    z-index: 1000;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .sugerencia-item {
+    padding: 10px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    color: var(--ink-2);
+    border-bottom: 1px solid var(--surface);
+  }
+  .sugerencia-item:hover {
+    background: var(--accent-bg);
+    color: var(--accent);
+  }
 
   /* ── INTERFAZ DINÁMICA DE CAMIÓN E INVENTARIO ─────────────── */
   .inventario-container {
@@ -534,11 +562,13 @@
       <div class="section-label">Ruta</div>
       <div class="field">
         <label>Dirección de origen</label>
-        <input type="text" id="origen" placeholder="Dirección exacta de inicio...">
+        <input type="text" id="origen" placeholder="Dirección exacta de inicio..." autocomplete="off">
+        <div id="sug-origen" class="sugerencias-lista hidden"></div>
       </div>
       <div class="field">
         <label>Dirección de destino</label>
-        <input type="text" id="destino" placeholder="Dirección exacta de llegada...">
+        <input type="text" id="destino" placeholder="Dirección exacta de llegada..." autocomplete="off">
+        <div id="sug-destino" class="sugerencias-lista hidden"></div>
       </div>
       
       <div class="field-row">
@@ -901,6 +931,96 @@
 </div>
 
 <script>
+// --- MOTOR MAPAS GRATUITO (Nominatim OSM + OSRM) ---
+let coordenadas = { origen: null, destino: null };
+
+document.addEventListener('DOMContentLoaded', () => {
+  configurarAutocompletado('origen', 'sug-origen');
+  configurarAutocompletado('destino', 'sug-destino');
+});
+
+function configurarAutocompletado(inputId, sugerenciasId) {
+  const input = document.getElementById(inputId);
+  const container = document.getElementById(sugerenciasId);
+  let timeout = null;
+
+  input.addEventListener('input', () => {
+    clearTimeout(timeout);
+    const query = input.value.trim();
+
+    if (query.length < 4) {
+      container.classList.add('hidden');
+      return;
+    }
+
+    timeout = setTimeout(() => {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=ar&limit=5`;
+
+      fetch(url)
+        .then(res => res.json())
+        .then(data => {
+          container.innerHTML = '';
+          
+          if (data.length === 0) {
+            container.classList.add('hidden');
+            return;
+          }
+
+          data.forEach(f => {
+            const nombre = f.display_name;
+            const div = document.createElement('div');
+            div.className = 'sugerencia-item';
+            div.textContent = nombre;
+            
+            div.addEventListener('click', () => {
+              input.value = nombre;
+              container.classList.add('hidden');
+              coordenadas[inputId] = [parseFloat(f.lat), parseFloat(f.lon)];
+              calcularRutaGratis();
+            });
+            
+            container.appendChild(div);
+          });
+          container.classList.remove('hidden');
+        })
+        .catch(err => console.error('Error en la búsqueda de dirección:', err));
+    }, 500);
+  });
+
+  document.addEventListener('click', (e) => {
+    if (e.target !== input) container.classList.add('hidden');
+  });
+}
+
+function calcularRutaGratis() {
+  if (coordenadas.origen && coordenadas.destino) {
+    const locOrigen = `${coordenadas.origen[1]},${coordenadas.origen[0]}`;
+    const locDestino = `${coordenadas.destino[1]},${coordenadas.destino[0]}`;
+    
+    const url = `https://router.project-osrm.org/route/v1/driving/${locOrigen};${locDestino}?overview=false`;
+
+    fetch(url)
+      .then(res => res.json())
+      .then(data => {
+        if (data.code === 'Ok' && data.routes.length > 0) {
+          const distanciaMetros = data.routes[0].distance;
+          const distanciaKm = (distanciaMetros / 1000).toFixed(1);
+          
+          const inputDistancia = document.getElementById('distancia_km');
+          inputDistancia.value = distanciaKm;
+          
+          inputDistancia.style.transition = 'border-color 0.3s';
+          inputDistancia.style.borderColor = 'var(--success)';
+          setTimeout(() => {
+            inputDistancia.style.borderColor = 'var(--border)';
+          }, 1500);
+        }
+      })
+      .catch(err => console.error('Error al calcular distancia con OSRM:', err));
+  }
+}
+// ---------------------------------------------------
+
 // Base de metros cúbicos unitarios por tipo de mueble
 const volumesMuebles = {
   Heladera: 1.20,
@@ -1067,6 +1187,12 @@ function volverPaso1() { setStep(1); }
 
 function reiniciar() {
   Object.keys(inventarioCantidades).forEach(k => { inventarioCantidades[k] = 0; document.getElementById(`cant-${k}`).textContent = 0; });
+  document.getElementById("origen").value = "";
+  document.getElementById("destino").value = "";
+  document.getElementById("distancia_km").value = "0";
+  document.getElementById("fecha").value = "";
+  document.getElementById("notas").value = "";
+  coordenadas = { origen: null, destino: null };
   actualizarCamionVisual();
   setStep(1);
 }
